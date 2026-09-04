@@ -1,0 +1,8 @@
+.env
+.env.bak
+.venv/
+venv/
+__pycache__/
+.streamlit/secrets.toml
+data/cache/
+.DS_Store
