@@ -335,9 +335,11 @@ st.markdown(f"<div style='border:1px solid #333;border-radius:10px;padding:12px'
             unsafe_allow_html=True)
 if xrp.get("ok"):
     _tag = " · STALE" if xrp.get("stale") else ""
-    _rl = f" · {xrp['rlusd']} RLUSD" if xrp.get("rlusd") else f" · {xrp['rlusd_note']}"
+    _rl = f" · RLUSD issued ${xrp['rlusd'] / 1e9:.2f}B" if xrp.get("rlusd") \
+        else f" · {xrp.get('rlusd_note', 'RLUSD: not on this server view')}"
     st.sidebar.markdown(f"XRPL · res {xrp['reserve_xrp']} · fee {xrp['fee_xrp']}{_rl} · "
                         f"ledger {xrp['seq']} ({xrp['close_time']}){_tag}")
+    st.sidebar.markdown(f"RLUSD ETH contract: {xrp.get('rlusd_eth', 'not mapped')}")
 else:
     st.sidebar.markdown(f"XRPL: {xrp['note']} · {xrp['rlusd_note']}")
 
