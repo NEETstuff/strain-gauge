@@ -11,6 +11,9 @@ from src.nyfed import get_nyfed_rates
 from src.fx import get_usdjpy_daily
 from src.auctions import get_auctions
 from src.dealers import get_dealers
+from src.comex import get_comex_gold
+from src.xrpl import get_xrpl
+from src.calendar import PRINTS
 from src.gauges import COPY, WORD, carry_status, dollar_status, liquidity_status, system_line, is_stale
 from src.charts import spark
 from src.units import fmt_T, fmt_B, fmt_dB, to_T
@@ -312,6 +315,35 @@ if dlr.get("ok") and dlr.get("mapped"):
 else:
     st.sidebar.markdown("Dealers: feed not mapped")
 
+# COMEX + XRPL context (fail independently; never feed gauges).
+try:
+    cmx = get_comex_gold()
+except Exception as e:
+    st.error(f"COMEX failed ({type(e).__name__}): {_scrub(e)}")
+    cmx = {"ok": False, "mapped": False, "line": "COMEX: feed not mapped",
+           "note": "feed error · data/cache/comex_gold.json"}
+try:
+    xrp = get_xrpl()
+except Exception as e:
+    st.error(f"XRPL failed ({type(e).__name__}): {_scrub(e)}")
+    xrp = {"ok": False, "stale": True, "seq": None,
+           "rlusd_note": "RLUSD: not on this server view",
+           "note": "feed error · data/cache/xrpl.json"}
+_tag = " · STALE" if cmx.get("stale") else ""
+st.markdown(f"<div style='border:1px solid #333;border-radius:10px;padding:12px'>"
+            f"<b>Gold vault</b>{_tag}<br>{cmx['line']}</div>",
+            unsafe_allow_html=True)
+if xrp.get("ok"):
+    _tag = " · STALE" if xrp.get("stale") else ""
+    _rl = f" · {xrp['rlusd']} RLUSD" if xrp.get("rlusd") else f" · {xrp['rlusd_note']}"
+    st.sidebar.markdown(f"XRPL · res {xrp['reserve_xrp']} · fee {xrp['fee_xrp']}{_rl} · "
+                        f"ledger {xrp['seq']} ({xrp['close_time']}){_tag}")
+else:
+    st.sidebar.markdown(f"XRPL: {xrp['note']} · {xrp['rlusd_note']}")
+
+with st.expander("Next prints"):
+    st.table([{"date": d, "event": e} for d, e in PRINTS])
+
 # On-chain dollars (context card; not a gauge; never feeds gauge status)
 try:
     sc = get_stablecoins()
@@ -384,6 +416,15 @@ with st.expander("For operators"):
                       "last_date": (auc.get("bill") or {}).get("date") or "—",
                       "latest": auc["line"][:80], "unit": "context", "lag": "daily (context)",
                       "status": "STALE" if auc["stale"] else "ok"})
+    _rows.append({"series": "COMEX gold", "fred_id": "CME (blocked)" if not cmx.get("mapped") else "CME",
+                  "last_date": cmx.get("date", "—") or "—", "latest": cmx["line"][:80],
+                  "unit": "context", "lag": "daily (context)",
+                  "status": "STALE" if cmx.get("stale") else ("ok" if cmx.get("ok") else "unmapped")})
+    if xrp.get("ok"):
+        _rows.append({"series": "XRPL ledger", "fred_id": "XRPL JSON-RPC",
+                      "last_date": xrp.get("close_time") or "—", "latest": xrp["seq"],
+                      "unit": "ledger", "lag": "realtime (context)",
+                      "status": "STALE" if xrp["stale"] else "ok"})
     st.table(_rows)
 
 st.caption("Lorca Labs — sovereign monitor. Data can be late. Thresholds are starting points, not gospel.")
