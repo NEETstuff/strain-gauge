@@ -56,6 +56,7 @@ WANT = {
     "US 10y": (["DGS10"], "daily"),
     "SWPT": (["SWPT"], "weekly"),
     "OBFRVOL": (["OBFRVOL"], "daily"),
+    "WRESBAL": (["WRESBAL"], "weekly"),  # context only: reserve level, never a gauge input
 }
 # IRLTLT01JPM156N dropped from the live path: FRED search confirms it is the only
 # Japan 10y series and it is monthly through 2026-06-01. No replacement found.
@@ -142,6 +143,21 @@ def connection_check(api_key):
     return False, "SOFR probe: empty observations", status
 
 
+def _h41_date(api_key):
+    """Latest H.4.1 release date via FRED release/dates (release_id=20, found via
+    series/release for WALCL/SWPT/WRESBAL). No HTML. Returns YYYY-MM-DD or None."""
+    url = ("https://api.stlouisfed.org/fred/release/dates"
+           f"?release_id=20&sort_order=desc&limit=1&api_key={api_key}&file_type=json")
+    try:
+        _check_budget()
+        with urllib.request.urlopen(url, timeout=CALL_TIMEOUT) as r:
+            payload = json.loads(r.read().decode())
+        dates = payload.get("release_dates", [])
+        return dates[0]["date"] if dates else None
+    except Exception:
+        return None
+
+
 def _resolve(label, api_key):
     """Try candidate ids; return dict(ok, id_used, vals, dates, error)."""
     ids, lag = WANT[label]
@@ -199,6 +215,7 @@ def fetch_live_or_demo():
     # OBFRVOL: skip quietly if missing
     if not res["OBFRVOL"]["ok"]:
         res["OBFRVOL"]["error"] = "OBFRVOL unavailable — skipped quietly."
+    h41_date = _h41_date(key)  # fail-open: None → sidebar shows the release link
 
     def last(label):
         r = res[label]
@@ -254,4 +271,4 @@ def fetch_live_or_demo():
     errs = [f"{k}: {v['error']}" for k, v in res.items() if not v["ok"] and k != "OBFRVOL"]
     return {"mode": "LIVE", "data": data, "updated": checked, "error": "; ".join(errs),
             "series_status": res, "partial": partial, "checked_at": checked,
-            "env": env_report()[1], "probe_status": 200}
+            "env": env_report()[1], "probe_status": 200, "h41_date": h41_date}

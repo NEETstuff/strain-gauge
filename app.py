@@ -271,8 +271,23 @@ with s3:
 
 if "fima_state" not in st.session_state:
     st.session_state["fima_state"] = "dormant"
+st.info(f"FIMA: manual — set after H.4.1 Thursday · current: {st.session_state['fima_state']}")
+
+# Thursday ritual (context only — SWPT stays the live swap print, no new gauge).
+st.sidebar.markdown("### Thursday ritual")
+_sw, _sw_d = data.get("dollar", {}).get("swpt"), asof.get("SWPT")
+st.sidebar.markdown(f"Swaps (SWPT) · {_sw_d or '—'} · {fmt_B(_sw) if _sw is not None else 'n/a'}")
 fima = st.sidebar.selectbox("FIMA", ["dormant", "elevated", "drawing"], key="fima_state")
-st.info(f"FIMA: manual — set after H.4.1 Thursday · current: {fima}")
+_h41 = result.get("h41_date")
+_H41_URL = "https://www.federalreserve.gov/releases/h41/current/default.htm"
+if _h41:
+    st.sidebar.markdown(f"H.4.1 · {_h41} · [open the release]({_H41_URL})")
+else:
+    st.sidebar.markdown(f"H.4.1 · open the release · [link]({_H41_URL})")
+_rsv = ss.get("WRESBAL", {})
+_rsv_bn = (_rsv.get("vals") or [None])[-1]
+_rsv_bn = _rsv_bn / 1000.0 if _rsv_bn is not None else None  # FRED $M → $B
+st.sidebar.markdown(f"Reserves · {asof.get('WRESBAL') or '—'} · {fmt_T(_rsv_bn)}")
 
 # Auction + dealer context (fail independently; never feed gauges).
 try:
@@ -330,8 +345,8 @@ else:
 with st.expander("For operators"):
     _units = {"WALCL": "$B", "TGA": "$B", "ON RRP": "$B", "SOFR": "%", "EFFR": "%",
               "IORB": "%", "USD/JPY": "level", "US 2y": "%", "US 10y": "%",
-              "SWPT": "$B", "OBFRVOL": "$B"}
-    _mln = {"WALCL", "TGA", "ON RRP", "SWPT"}  # FRED prints $M → show $B
+              "SWPT": "$B", "OBFRVOL": "$B", "WRESBAL": "$B"}
+    _mln = {"WALCL", "TGA", "ON RRP", "SWPT", "WRESBAL"}  # FRED prints $M → show $B
 
     def _latest(k, v):
         if not (v["ok"] and v["vals"]):
