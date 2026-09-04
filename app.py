@@ -6,8 +6,9 @@ from pathlib import Path
 import streamlit as st
 from src.fetch import fetch_live_or_demo, load_demo
 from src.stablecoins import get_stablecoins
-from src.gauges import COPY, WORD, carry_status, dollar_status, liquidity_status, system_line
+from src.gauges import COPY, WORD, carry_status, dollar_status, liquidity_status, system_line, is_stale
 from src.charts import spark
+from src.units import fmt_T, fmt_B, fmt_dB, to_T
 
 st.set_page_config(page_title="Strain Gauge", layout="wide")
 
@@ -102,7 +103,42 @@ dol_s, _dol = guarded("dollar", dollar_status, data)
 car_s, _car = guarded("carry", carry_status, data)
 net = data.get("liquidity", {}).get("walcl", 0) or 0
 net -= (data.get("liquidity", {}).get("tga", 0) or 0) + (data.get("liquidity", {}).get("onrrp", 0) or 0)
+slope_4w = _liq[2] if _liq else None
 spread = ((data.get("dollar", {}).get("sofr") or 0) - (data.get("dollar", {}).get("iorb") or 0)) * 100
+
+# Stale flags: daily >3d, weekly >10d (lags in data["lag"]). LIVE only; a stale
+# series alone never promotes a card to STRAIN (red capped at yellow).
+CARD_SERIES = {"liquidity": ["WALCL", "TGA", "ON RRP"], "dollar": ["SOFR", "IORB", "SWPT"],
+               "carry": ["USD/JPY", "JP 10y"]}
+today = (result.get("checked_at") or "")[:10]
+asof, lags = data.get("asof", {}), data.get("lag", {})
+stale = {}
+for _card, _labels in CARD_SERIES.items():
+    _ages = [(lb, asof.get(lb), lags.get(lb, "daily")) for lb in _labels]
+    stale[_card] = any(asof.get(lb) and is_stale(asof.get(lb), lags.get(lb, "daily"), today)
+                       for lb in _labels) if today and mode == "LIVE" else False
+if stale.get("liquidity") and liq_s == "red":
+    liq_s, _capped_liq = "yellow", True
+else:
+    _capped_liq = False
+if stale.get("dollar") and dol_s == "red":
+    dol_s, _capped_dol = "yellow", True
+else:
+    _capped_dol = False
+if stale.get("carry") and car_s == "red":
+    car_s, _capped_car = "yellow", True
+else:
+    _capped_car = False
+
+
+def _md(datestr):
+    """YYYY-MM-DD → 'Aug 28'. Raw string back if unparseable."""
+    try:
+        from datetime import date as _date
+        y, m, d = map(int, datestr.split("-"))
+        return _date(y, m, d).strftime("%b %-d")
+    except Exception:
+        return datestr or "—"
 
 ok_statuses = [s for s in (liq_s, dol_s, car_s) if s]
 st.subheader(system_line(ok_statuses) if ok_statuses else "System: data partial — live series missing.")
@@ -110,9 +146,11 @@ st.caption("Plumbing pulse. Not a trade signal.")
 st.markdown(f"**{badge}** · Updated: {updated}")
 
 
-def card(title, status, line, number, is_partial=False):
+def card(title, status, line, number, is_partial=False, is_stale=False):
     label = "PARTIAL" if is_partial else WORD.get(status, "—")
-    pip = "#9ca3af" if is_partial else COLOR.get(status, "#9ca3af")
+    if is_stale and not is_partial:
+        label += " · STALE"
+    pip = "#9ca3af" if (is_partial or is_stale) else COLOR.get(status, "#9ca3af")
     st.markdown(
         f"<div style='border:1px solid #333;border-radius:10px;padding:12px'>"
         f"<span style='color:{pip};font-size:22px'>●</span> "
@@ -125,6 +163,9 @@ def card(title, status, line, number, is_partial=False):
 def line_for(which, status, base):
     if partial.get(which):
         return base + " (partial — live series stale or missing, not replaced with demo.)"
+    _capped = {"liquidity": _capped_liq, "dollar": _capped_dol, "carry": _capped_car}.get(which)
+    if _capped:
+        return base + " (inputs stale — capped at TIGHTENING, not STRAIN.)"
     return base
 
 
@@ -133,26 +174,31 @@ with c1:
     p = partial.get("liquidity", False) or liq_s is None
     base = COPY["liquidity"][liq_s] if liq_s else "Liquidity data unavailable."
     card("Liquidity Health", liq_s or "green", line_for("liquidity", liq_s, base),
-         f"Net liq ${net:,.0f}B" if not p else "n/a (partial)", p)
+         f"Net liq {fmt_T(net)} · {fmt_dB(slope_4w)}" if not p else "n/a (partial)", p,
+         stale.get("liquidity", False))
 with c2:
     p = partial.get("dollar", False) or dol_s is None
     base = COPY["dollar"][dol_s] if dol_s else "Dollar funding data unavailable."
     iorb_id = data.get("dollar", {}).get("iorb_id", "IORB")
     card("Dollar Stress", dol_s or "green", line_for("dollar", dol_s, base),
-         f"SOFR–{iorb_id} {spread:.0f}bp · Swaps ${(data.get('dollar', {}).get('swpt') or 0):.2f}B"
-         if not p else "n/a (partial)", p)
+         f"SOFR–{iorb_id} {spread:.0f}bp · Swaps {fmt_B(data.get('dollar', {}).get('swpt'))}"
+         if not p else "n/a (partial)", p, stale.get("dollar", False))
 with c3:
     p = partial.get("carry", False) or car_s is None
     base = COPY["carry"][car_s] if car_s else "Carry data unavailable."
     uj = data.get("carry", {}).get("usd_jpy")
     j10 = data.get("carry", {}).get("jgb10y")
+    uj_d = _md(asof.get("USD/JPY")) if asof.get("USD/JPY") else "—"
+    j_d = _md(asof.get("JP 10y")) if asof.get("JP 10y") else "—"
     card("Carry Risk", car_s or "green", line_for("carry", car_s, base),
-         f"USD/JPY {uj:.1f} · JGB10y {j10:.2f}%" if (not p and uj and j10) else "n/a (partial)", p)
+         f"USD/JPY {uj:.1f} ({uj_d}) · JGB10y {j10:.2f}% ({j_d})"
+         if (not p and uj and j10) else "n/a (partial)", p, stale.get("carry", False))
 
 s1, s2, s3 = st.columns(3)
 with s1:
     if data.get("series", {}).get("net_liquidity"):
-        st.plotly_chart(spark(data["series"]["net_liquidity"], "Net liquidity"), use_container_width=True)
+        st.plotly_chart(spark(to_T(data["series"]["net_liquidity"]), "Net liquidity ($T)"),
+                        use_container_width=True)
 with s2:
     if data.get("series", {}).get("sofr_iorb_bp"):
         st.plotly_chart(spark(data["series"]["sofr_iorb_bp"], "SOFR–IORB (bp)"), use_container_width=True)
@@ -160,7 +206,10 @@ with s3:
     if data.get("series", {}).get("usd_jpy"):
         st.plotly_chart(spark(data["series"]["usd_jpy"], "USD/JPY"), use_container_width=True)
 
-st.info(data.get("fima_note", "FIMA: dormant / elevated / drawing — update from H.4.1 Thursday."))
+if "fima_state" not in st.session_state:
+    st.session_state["fima_state"] = "dormant"
+fima = st.sidebar.selectbox("FIMA", ["dormant", "elevated", "drawing"], key="fima_state")
+st.info(f"FIMA: manual — set after H.4.1 Thursday · current: {fima}")
 
 # On-chain dollars (context card; not a gauge; never feeds gauge status)
 try:
@@ -193,11 +242,31 @@ else:
                 unsafe_allow_html=True)
 
 with st.expander("For operators"):
-    st.table([{"series": k, "fred_id": v["id"],
-               "last_date": v["dates"][-1] if v["ok"] and v["dates"] else "—",
-               "latest": v["vals"][-1] if v["ok"] and v["vals"] else "missing",
-               "lag": v["lag"], "status": "ok" if v["ok"] else "missing"}
-              for k, v in ss.items()] if ss else [{"note": "DEMO mode — fixtures in data/demo.json"}])
+    _units = {"WALCL": "$B", "TGA": "$B", "ON RRP": "$B", "SOFR": "%", "EFFR": "%",
+              "IORB": "%", "USD/JPY": "level", "US 2y": "%", "US 10y": "%",
+              "SWPT": "$B", "OBFRVOL": "$B"}
+    _mln = {"WALCL", "TGA", "ON RRP", "SWPT"}  # FRED prints $M → show $B
+
+    def _latest(k, v):
+        if not (v["ok"] and v["vals"]):
+            return "missing"
+        x = v["vals"][-1]
+        return x / 1000.0 if k in _mln else x
+
+    _rows = [{"series": k, "fred_id": v["id"],
+              "last_date": v["dates"][-1] if v["ok"] and v["dates"] else "—",
+              "latest": _latest(k, v),
+              "unit": _units.get(k, "—"), "lag": v["lag"],
+              "status": "ok" if v["ok"] else "missing"}
+             for k, v in ss.items()] if ss else [{"note": "DEMO mode — fixtures in data/demo.json"}]
+    _jp = result.get("jp10y")
+    if _jp:
+        _rows.append({"series": "JP 10y", "fred_id": _jp["id"],
+                      "last_date": _jp["dates"][-1] if _jp["ok"] and _jp["dates"] else "—",
+                      "latest": _jp["vals"][-1] if _jp["ok"] and _jp["vals"] else "missing",
+                      "unit": "%", "lag": _jp["lag"],
+                      "status": "ok" if _jp["ok"] else "missing"})
+    st.table(_rows)
 
 st.caption("Lorca Labs — sovereign monitor. Data can be late. Thresholds are starting points, not gospel.")
 st.caption("This product uses the FRED® API but is not endorsed or certified by the Federal Reserve Bank of St. Louis.")

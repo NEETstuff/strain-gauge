@@ -15,11 +15,10 @@ streamlit run app.py
 
 ## Thresholds (v1, edit in `src/gauges.py` THRESHOLDS)
 
-- SOFR–IORB: green < 5bp, yellow 5–15bp, red > 15bp.
-- ON RRP: near-zero = buffer gone (yellow only if TGA also elevated), not auto-red.
-- TGA: yellow if rising fast week-over-week (> $30B); combined with net-liquidity slope.
+- Dollar Stress: SOFR–IORB < 5bp and SWPT < $1B → CALM; 5–15bp or $1–10B → TIGHTENING; > 15bp or > $10B → STRAIN. No other rule touches this card.
+- Liquidity Health: net-liq level + 4-week slope (FRED $M normalized to $B, shown as $T). Mild drain → TIGHTENING; STRAIN only on fast drain (≥ $150B/4w) or a new scarcity low.
 - USD/JPY: yellow above 158; red on >2% 3-day yen rally or JGB 10y ≥ 3% with USDJPY > 157.
-- SWPT (swap lines): yellow > $1B, red > $10B.
+- Stale: daily series > 3 days old, weekly > 10 days, JGB (monthly/lagged) > 45 days → card STALE; stale inputs cap a card at TIGHTENING, never STRAIN.
 
 ## Notes
 

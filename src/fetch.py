@@ -58,6 +58,10 @@ WANT = {
     "OBFRVOL": (["OBFRVOL"], "daily"),
 }
 JP10Y_IDS = ["IRLTLT01JPM156N"]  # best-effort only; may be discontinued
+JP10Y_LAG = "monthly (lagged)"
+
+# Longer window for the liquidity trio so gauges can use a 4-week slope.
+NLIMITS = {"WALCL": 30, "TGA": 30, "ON RRP": 30}
 
 
 def load_demo():
@@ -141,11 +145,12 @@ def connection_check(api_key):
 def _resolve(label, api_key):
     """Try candidate ids; return dict(ok, id_used, vals, dates, error)."""
     ids, lag = WANT[label]
+    n = NLIMITS.get(label, 8)
     last_err = ""
     for sid in ids:
         try:
             _check_budget()
-            vals, dates = _fred_obs_dated(sid, api_key, n=8)
+            vals, dates = _fred_obs_dated(sid, api_key, n=n)
             return {"ok": True, "id": sid, "vals": vals, "dates": dates, "lag": lag, "error": ""}
         except TimeoutError:
             raise
@@ -184,12 +189,13 @@ def fetch_live_or_demo():
         res = {label: _resolve(label, key) for label in WANT}
         # Japan 10y: optional, best-effort
         jp = {"ok": False, "id": JP10Y_IDS[0], "vals": [], "dates": [],
-              "lag": "daily", "error": "not resolved"}
+              "lag": JP10Y_LAG, "error": "not resolved"}
         for sid in JP10Y_IDS:
             try:
                 _check_budget()
                 vals, dates = _fred_obs_dated(sid, key, n=2)
-                jp = {"ok": True, "id": sid, "vals": vals, "dates": dates, "lag": "daily", "error": ""}
+                jp = {"ok": True, "id": sid, "vals": vals, "dates": dates,
+                      "lag": JP10Y_LAG, "error": ""}
                 break
             except TimeoutError:
                 raise
@@ -221,15 +227,25 @@ def fetch_live_or_demo():
     car_ok = res["USD/JPY"]["ok"] and (res["US 10y"]["ok"] or jp["ok"])
 
     data = {"liquidity": {}, "dollar": {}, "carry": {}, "series": {}, "meta": {},
-            "fima_note": "FIMA: dormant / elevated / drawing — update from H.4.1 Thursday."}
+            "hist": {}, "asof": {}}
+    data["asof"] = {k: (v["dates"][-1] if v["ok"] and v["dates"] else None)
+                    for k, v in res.items()}
+    data["asof"]["JP 10y"] = jp["dates"][-1] if jp["ok"] and jp["dates"] else None
+    data["lag"] = {k: v["lag"] for k, v in res.items()}
+    data["lag"]["JP 10y"] = jp["lag"]
     if liq_ok:
-        walcl, walcl_p = last("WALCL"), prev("WALCL")
-        tga, tga_p = last("TGA"), prev("TGA")
+        # FRED money-stock levels print in $M → normalize to $B once, here.
+        bn = {k: [v / 1000.0 for v in res[k]["vals"]] for k in ("WALCL", "TGA", "ON RRP")}
+        walcl, walcl_p = bn["WALCL"][-1], bn["WALCL"][-2]
+        tga, tga_p = bn["TGA"][-1], bn["TGA"][-2]
         data["liquidity"] = {"walcl": walcl, "walcl_prev": walcl_p, "tga": tga,
-                             "tga_prev": tga_p, "onrrp": last("ON RRP")}
+                             "tga_prev": tga_p, "onrrp": bn["ON RRP"][-1]}
+        data["hist"] = {"WALCL": {"dates": res["WALCL"]["dates"], "vals": bn["WALCL"]},
+                        "TGA": {"dates": res["TGA"]["dates"], "vals": bn["TGA"]},
+                        "ON RRP": {"dates": res["ON RRP"]["dates"], "vals": bn["ON RRP"]}}
         data["series"]["net_liquidity"] = [
             w - t - r for w, t, r in
-            zip(res["WALCL"]["vals"][-7:], res["TGA"]["vals"][-7:], res["ON RRP"]["vals"][-7:])]
+            zip(bn["WALCL"][-7:], bn["TGA"][-7:], bn["ON RRP"][-7:])]
     if dol_ok:
         swpt_b = last("SWPT") / 1000.0  # SWPT is $ millions -> $B
         data["dollar"] = {"sofr": last("SOFR"), "iorb": last("IORB"),
