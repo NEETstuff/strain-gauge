@@ -9,6 +9,8 @@ from src.stablecoins import get_stablecoins
 from src.treasury import get_tga_daily
 from src.nyfed import get_nyfed_rates
 from src.fx import get_usdjpy_daily
+from src.auctions import get_auctions
+from src.dealers import get_dealers
 from src.gauges import COPY, WORD, carry_status, dollar_status, liquidity_status, system_line, is_stale
 from src.charts import spark
 from src.units import fmt_T, fmt_B, fmt_dB, to_T
@@ -272,6 +274,29 @@ if "fima_state" not in st.session_state:
 fima = st.sidebar.selectbox("FIMA", ["dormant", "elevated", "drawing"], key="fima_state")
 st.info(f"FIMA: manual — set after H.4.1 Thursday · current: {fima}")
 
+# Auction + dealer context (fail independently; never feed gauges).
+try:
+    auc = get_auctions()
+except Exception as e:
+    st.error(f"Auctions failed ({type(e).__name__}): {_scrub(e)}")
+    auc = {"ok": False, "stale": True,
+           "line": "Auctions: no parseable feed — check TreasuryDirect.",
+           "note": "feed error · data/cache/auctions.json"}
+try:
+    dlr = get_dealers()
+except Exception as e:
+    st.error(f"Dealers failed ({type(e).__name__}): {_scrub(e)}")
+    dlr = {"ok": False, "mapped": False, "note": "feed error · data/cache/dealers.json"}
+_tag = " · STALE" if auc.get("stale") else ""
+st.markdown(f"<div style='border:1px solid #333;border-radius:10px;padding:12px'>"
+            f"<b>Auction prints</b>{_tag}<br>{auc['line']}</div>",
+            unsafe_allow_html=True)
+if dlr.get("ok") and dlr.get("mapped"):
+    _tag = " · STALE" if dlr.get("stale") else ""
+    st.sidebar.markdown(f"Dealers · {dlr.get('asof', '—')}{_tag} · {dlr['note']}")
+else:
+    st.sidebar.markdown("Dealers: feed not mapped")
+
 # On-chain dollars (context card; not a gauge; never feeds gauge status)
 try:
     sc = get_stablecoins()
@@ -339,6 +364,11 @@ with st.expander("For operators"):
                           "last_date": nyf["date"] or "—", "latest": nyf.get(_k),
                           "unit": _unit, "lag": "daily (context)",
                           "status": "STALE" if nyf["stale"] else "ok"})
+    if auc.get("ok"):
+        _rows.append({"series": "Auction prints", "fred_id": "TreasuryDirect TA_WS",
+                      "last_date": (auc.get("bill") or {}).get("date") or "—",
+                      "latest": auc["line"][:80], "unit": "context", "lag": "daily (context)",
+                      "status": "STALE" if auc["stale"] else "ok"})
     st.table(_rows)
 
 st.caption("Lorca Labs — sovereign monitor. Data can be late. Thresholds are starting points, not gospel.")
