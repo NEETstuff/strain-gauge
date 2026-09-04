@@ -17,7 +17,7 @@ streamlit run app.py
 
 - Dollar Stress: SOFR–IORB < 5bp and SWPT < $1B → CALM; 5–15bp or $1–10B → TIGHTENING; > 15bp or > $10B → STRAIN. No other rule touches this card.
 - Liquidity Health: net-liq level + 4-week slope (FRED $M normalized to $B, shown as $T). Mild drain → TIGHTENING; STRAIN only on fast drain (≥ $150B/4w) or a new scarcity low.
-- USD/JPY: yellow above 158; red on >2% 3-day yen rally or JGB 10y ≥ 3% with USDJPY > 157.
+- Carry: USD/JPY (FRED DEXJPUS if ≤3d, else keyless `open.er-api.com/v6/latest/USD`, else ECB eurofxref; rolling cache `data/cache/usdjpy_daily.json`) + US 2y. Red on >2% 3-day yen rally; yellow above 158, rally >1%, or USDJPY >157 with US2y ≥4.5%. JGB has no live FRED series (IRLTLT01JPM156N is monthly through June) → shown n/a, never STRAIN.
 - Stale: daily series > 3 days old, weekly > 10 days, JGB (monthly/lagged) > 45 days → card STALE; stale inputs cap a card at TIGHTENING, never STRAIN.
 
 ## Notes

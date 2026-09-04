@@ -8,8 +8,8 @@ THRESHOLDS = {
     "liq_new_low_margin": 25.0,     # $B below recent-range low = scarce → STRAIN
     "usd_jpy_yellow": 158.0,
     "yen_rally_3d_pct": 2.0,     # >2% 3-day yen rally (USDJPY fall) = red
-    "jgb10y_red": 3.0,
-    "usdjpy_red_hold": 157.0,
+    "usdjpy_stretch": 157.0,     # with US 2y high = stretched carry → yellow
+    "us2y_high": 4.5,            # %; corroborates stretched carry, never STRAIN alone
 }
 
 # As-of older than this → STALE; a stale series alone never promotes to STRAIN.
@@ -107,13 +107,18 @@ def dollar_status(d):
 
 
 def carry_status(d):
+    """USD/JPY + US 2y only. No JGB leg: no live FRED series (IRLTLT01JPM156N is
+    monthly, last print June). Missing JGB is shown as n/a, never STRAIN."""
     c = d["carry"]
+    if not c.get("usd_jpy") or not c.get("usd_jpy_3d_ago"):
+        return None, None
     rally = (c["usd_jpy_3d_ago"] - c["usd_jpy"]) / c["usd_jpy_3d_ago"] * 100  # + = yen strengthening
-    if rally > THRESHOLDS["yen_rally_3d_pct"] or (
-        c["jgb10y"] >= THRESHOLDS["jgb10y_red"] and c["usd_jpy"] > THRESHOLDS["usdjpy_red_hold"]
-    ):
+    if rally > THRESHOLDS["yen_rally_3d_pct"]:
         return "red", rally
-    if c["usd_jpy"] > THRESHOLDS["usd_jpy_yellow"] or c["jgb10y"] > 2.0 or rally > 1.0:
+    us2y = c.get("us2y")
+    if (c["usd_jpy"] > THRESHOLDS["usd_jpy_yellow"] or rally > 1.0
+            or (c["usd_jpy"] > THRESHOLDS["usdjpy_stretch"] and us2y is not None
+                and us2y >= THRESHOLDS["us2y_high"])):
         return "yellow", rally
     return "green", rally
 

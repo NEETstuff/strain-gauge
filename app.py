@@ -8,6 +8,7 @@ from src.fetch import fetch_live_or_demo, load_demo
 from src.stablecoins import get_stablecoins
 from src.treasury import get_tga_daily
 from src.nyfed import get_nyfed_rates
+from src.fx import get_usdjpy_daily
 from src.gauges import COPY, WORD, carry_status, dollar_status, liquidity_status, system_line, is_stale
 from src.charts import spark
 from src.units import fmt_T, fmt_B, fmt_dB, to_T
@@ -85,11 +86,6 @@ if ss:
         date = r["dates"][-1] if r["ok"] and r["dates"] else "—"
         id_note = "" if r["id"] == label else f" ({r['id']})"
         st.sidebar.markdown(f"{mark} {label}{id_note} · {date} · {r['lag']}")
-    jp = result.get("jp10y")
-    if jp:
-        mark = "✅" if jp["ok"] else "❌"
-        date = jp["dates"][-1] if jp["ok"] and jp["dates"] else "—"
-        st.sidebar.markdown(f"{mark} JP 10y ({jp['id']}) · {date} · {jp['lag']}")
 
 # Gauge computation; partial gauges never use demo numbers
 def guarded(which, fn, d):
@@ -102,7 +98,7 @@ def guarded(which, fn, d):
 
 liq_s, _liq = guarded("liquidity", liquidity_status, data)
 dol_s, _dol = guarded("dollar", dollar_status, data)
-car_s, _car = guarded("carry", carry_status, data)
+spread = ((data.get("dollar", {}).get("sofr") or 0) - (data.get("dollar", {}).get("iorb") or 0)) * 100
 net = data.get("liquidity", {}).get("walcl", 0) or 0
 net -= (data.get("liquidity", {}).get("tga", 0) or 0) + (data.get("liquidity", {}).get("onrrp", 0) or 0)
 slope_4w = _liq[2] if _liq else None
@@ -111,7 +107,7 @@ spread = ((data.get("dollar", {}).get("sofr") or 0) - (data.get("dollar", {}).ge
 # Stale flags: daily >3d, weekly >10d (lags in data["lag"]). LIVE only; a stale
 # series alone never promotes a card to STRAIN (red capped at yellow).
 CARD_SERIES = {"liquidity": ["WALCL", "TGA", "ON RRP"], "dollar": ["SOFR", "IORB", "SWPT"],
-               "carry": ["USD/JPY", "JP 10y"]}
+               "carry": ["USD/JPY"]}  # carry freshness owned by the daily FX pipe below
 today = (result.get("checked_at") or "")[:10]
 asof, lags = data.get("asof", {}), data.get("lag", {})
 stale = {}
@@ -127,10 +123,7 @@ if stale.get("dollar") and dol_s == "red":
     dol_s, _capped_dol = "yellow", True
 else:
     _capped_dol = False
-if stale.get("carry") and car_s == "red":
-    car_s, _capped_car = "yellow", True
-else:
-    _capped_car = False
+_capped_car = False  # carry capped in the FX-pipe block below, after recompute
 
 
 def _md(datestr):
@@ -184,6 +177,29 @@ if nyf.get("ok") and nyf.get("date") and _fred_sofr_d and nyf["date"] > _fred_so
 else:
     _dol_asof = f"FRED {_md(_fred_sofr_d)}" if _fred_sofr_d else "date n/a"
 
+# Daily USD/JPY: FRED DEXJPUS preferred if ≤3d, else keyless public close.
+try:
+    _fxx = ss.get("USD/JPY", {})
+    _fx_fred_d = (_fxx.get("dates") or [None])[-1]
+    _fx_fred_v = (_fxx.get("vals") or [None])[-1]
+    fx = get_usdjpy_daily(_fx_fred_d, _fx_fred_v)
+except Exception as e:
+    st.error(f"USD/JPY failed ({type(e).__name__}): {_scrub(e)}")
+    fx = {"ok": False, "stale": True, "date": None, "val": None, "val_3d_ago": None,
+          "source": "none", "note": "feed error · data/cache/usdjpy_daily.json"}
+if fx.get("ok"):
+    data["carry"]["usd_jpy"] = fx["val"]
+    data["carry"]["usd_jpy_3d_ago"] = fx["val_3d_ago"] or fx["val"]
+    data["series"]["usd_jpy"] = [c["val"] for c in fx.get("closes", [])[-7:]] or \
+        data["series"].get("usd_jpy", [])
+car_s, _car = guarded("carry", carry_status, data)
+if fx.get("ok"):
+    stale["carry"] = bool(fx["stale"] or is_stale(fx["date"], "daily", today))
+    if stale["carry"] and car_s == "red":
+        car_s, _capped_car = "yellow", True
+st.sidebar.markdown(f"USD/JPY · {fx.get('date') or '—'} · {fx.get('source', 'none')}")
+st.sidebar.markdown("JGB10y · n/a · no live FRED series")
+
 ok_statuses = [s for s in (liq_s, dol_s, car_s) if s]
 st.subheader(system_line(ok_statuses) if ok_statuses else "System: data partial — live series missing.")
 st.caption("Plumbing pulse. Not a trade signal.")
@@ -232,12 +248,12 @@ with c3:
     p = partial.get("carry", False) or car_s is None
     base = COPY["carry"][car_s] if car_s else "Carry data unavailable."
     uj = data.get("carry", {}).get("usd_jpy")
-    j10 = data.get("carry", {}).get("jgb10y")
-    uj_d = _md(asof.get("USD/JPY")) if asof.get("USD/JPY") else "—"
-    j_d = _md(asof.get("JP 10y")) if asof.get("JP 10y") else "—"
+    u2 = data.get("carry", {}).get("us2y")
+    u2_d = _md(asof.get("US 2y")) if asof.get("US 2y") else "—"
     card("Carry Risk", car_s or "green", line_for("carry", car_s, base),
-         f"USD/JPY {uj:.1f} ({uj_d}) · JGB10y {j10:.2f}% ({j_d})"
-         if (not p and uj and j10) else "n/a (partial)", p, stale.get("carry", False))
+         f"USD/JPY {uj:.1f} ({_md(fx.get('date'))}, {fx.get('source')}) · "
+         f"US2y {u2:.2f}% ({u2_d}) · JGB10y n/a · no live FRED series"
+         if (not p and uj and u2) else "n/a (partial)", p, stale.get("carry", False))
 
 s1, s2, s3 = st.columns(3)
 with s1:
@@ -304,13 +320,14 @@ with st.expander("For operators"):
               "unit": _units.get(k, "—"), "lag": v["lag"],
               "status": "ok" if v["ok"] else "missing"}
              for k, v in ss.items()] if ss else [{"note": "DEMO mode — fixtures in data/demo.json"}]
-    _jp = result.get("jp10y")
-    if _jp:
-        _rows.append({"series": "JP 10y", "fred_id": _jp["id"],
-                      "last_date": _jp["dates"][-1] if _jp["ok"] and _jp["dates"] else "—",
-                      "latest": _jp["vals"][-1] if _jp["ok"] and _jp["vals"] else "missing",
-                      "unit": "%", "lag": _jp["lag"],
-                      "status": "ok" if _jp["ok"] else "missing"})
+    _rows.append({"series": "JGB 10y", "fred_id": "none — no live FRED series",
+                  "last_date": "n/a", "latest": "n/a (IRLTLT01JPM156N ends 2026-06-01)",
+                  "unit": "%", "lag": "monthly (lagged)", "status": "missing"})
+    if fx.get("ok"):
+        _rows.append({"series": "USD/JPY daily", "fred_id": fx["source"],
+                      "last_date": fx["date"] or "—", "latest": fx["val"],
+                      "unit": "level", "lag": "daily (context)",
+                      "status": "STALE" if fx["stale"] else "ok"})
     if tga_d.get("ok"):
         _rows.append({"series": "TGA daily", "fred_id": "DTS operating_cash_balance",
                       "last_date": tga_d["date"] or "—", "latest": tga_d["tga_bn"],

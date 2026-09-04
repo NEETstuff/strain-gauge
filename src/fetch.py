@@ -57,8 +57,8 @@ WANT = {
     "SWPT": (["SWPT"], "weekly"),
     "OBFRVOL": (["OBFRVOL"], "daily"),
 }
-JP10Y_IDS = ["IRLTLT01JPM156N"]  # best-effort only; may be discontinued
-JP10Y_LAG = "monthly (lagged)"
+# IRLTLT01JPM156N dropped from the live path: FRED search confirms it is the only
+# Japan 10y series and it is monthly through 2026-06-01. No replacement found.
 
 # Longer window for the liquidity trio so gauges can use a 4-week slope.
 NLIMITS = {"WALCL": 30, "TGA": 30, "ON RRP": 30}
@@ -187,20 +187,6 @@ def fetch_live_or_demo():
 
     try:
         res = {label: _resolve(label, key) for label in WANT}
-        # Japan 10y: optional, best-effort
-        jp = {"ok": False, "id": JP10Y_IDS[0], "vals": [], "dates": [],
-              "lag": JP10Y_LAG, "error": "not resolved"}
-        for sid in JP10Y_IDS:
-            try:
-                _check_budget()
-                vals, dates = _fred_obs_dated(sid, key, n=2)
-                jp = {"ok": True, "id": sid, "vals": vals, "dates": dates,
-                      "lag": JP10Y_LAG, "error": ""}
-                break
-            except TimeoutError:
-                raise
-            except RuntimeError as e:
-                jp["error"] = str(e)
     except TimeoutError as e:
         d = load_demo()
         return {"mode": "DEMO", "data": d, "updated": d["meta"]["as_of"] + " (demo)",
@@ -224,15 +210,13 @@ def fetch_live_or_demo():
 
     liq_ok = all(res[k]["ok"] for k in ("WALCL", "TGA", "ON RRP"))
     dol_ok = all(res[k]["ok"] for k in ("SOFR", "IORB", "SWPT"))  # EFFR/OBFRVOL optional extras
-    car_ok = res["USD/JPY"]["ok"] and (res["US 10y"]["ok"] or jp["ok"])
+    car_ok = res["USD/JPY"]["ok"] and res["US 2y"]["ok"]  # JGB dropped: no live FRED series
 
     data = {"liquidity": {}, "dollar": {}, "carry": {}, "series": {}, "meta": {},
             "hist": {}, "asof": {}}
     data["asof"] = {k: (v["dates"][-1] if v["ok"] and v["dates"] else None)
                     for k, v in res.items()}
-    data["asof"]["JP 10y"] = jp["dates"][-1] if jp["ok"] and jp["dates"] else None
     data["lag"] = {k: v["lag"] for k, v in res.items()}
-    data["lag"]["JP 10y"] = jp["lag"]
     if liq_ok:
         # FRED money-stock levels print in $M → normalize to $B once, here.
         bn = {k: [v / 1000.0 for v in res[k]["vals"]] for k in ("WALCL", "TGA", "ON RRP")}
@@ -257,12 +241,10 @@ def fetch_live_or_demo():
             (res["SOFR"]["vals"][-n + i] - res["IORB"]["vals"][-n + i]) * 100 for i in range(n)]
     if car_ok:
         uj, uj_vals = last("USD/JPY"), res["USD/JPY"]["vals"]
-        j10 = jp["vals"][-1] if jp["ok"] else None
         u10 = last("US 10y")
-        gap = (u10 - j10) if (u10 is not None and j10 is not None) else None
         data["carry"] = {"usd_jpy": uj,
                          "usd_jpy_3d_ago": uj_vals[-4] if len(uj_vals) >= 4 else uj_vals[0],
-                         "jgb10y": j10, "us_jp_10y_gap": gap,
+                         "jgb10y": None, "us_jp_10y_gap": None,  # no live FRED JGB series
                          "us2y": last("US 2y"), "us10y": u10}
         data["series"]["usd_jpy"] = uj_vals[-7:]
 
@@ -270,8 +252,6 @@ def fetch_live_or_demo():
     data["meta"] = {"as_of": checked, "mode": "LIVE", "note": "FRED live series."}
     partial = {"liquidity": not liq_ok, "dollar": not dol_ok, "carry": not car_ok}
     errs = [f"{k}: {v['error']}" for k, v in res.items() if not v["ok"] and k != "OBFRVOL"]
-    if not jp["ok"]:
-        errs.append(f"JP10y: {jp['error']}")
     return {"mode": "LIVE", "data": data, "updated": checked, "error": "; ".join(errs),
-            "series_status": res, "jp10y": jp, "partial": partial, "checked_at": checked,
+            "series_status": res, "partial": partial, "checked_at": checked,
             "env": env_report()[1], "probe_status": 200}
