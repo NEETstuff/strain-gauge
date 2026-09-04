@@ -7,9 +7,14 @@ from zoneinfo import ZoneInfo
 
 UA = {"User-Agent": "StrainGauge/1.0 (Lorca Labs; local dashboard)"}
 BASE = "https://markets.newyorkfed.org/api/rates"
-ENDPOINTS = {"EFFR": f"{BASE}/unsecured/effr/last/3.json",
-             "OBFR": f"{BASE}/unsecured/obfr/last/3.json",
-             "SOFR": f"{BASE}/secured/sofr/last/3.json"}
+# Primary is the single-latest print (last/1); last/3 is fallback. No latest.json
+# on this API (400) — last/1 IS the documented latest path.
+ENDPOINTS = {"EFFR": (f"{BASE}/unsecured/effr/last/1.json",
+                      f"{BASE}/unsecured/effr/last/3.json"),
+             "OBFR": (f"{BASE}/unsecured/obfr/last/1.json",
+                      f"{BASE}/unsecured/obfr/last/3.json"),
+             "SOFR": (f"{BASE}/secured/sofr/last/1.json",
+                      f"{BASE}/secured/sofr/last/3.json")}
 CACHE = Path(__file__).resolve().parent.parent / "data" / "cache" / "nyfed_rates.json"
 TZ = ZoneInfo("America/Chicago")
 
@@ -18,22 +23,24 @@ def _today():
     return datetime.now(TZ).date().isoformat()
 
 
-def _fetch(url):
+def _fetch(urls):
+    """Try primary then fallback URL. One retry each."""
     last = None
-    for _ in range(2):  # one retry
-        try:
-            req = urllib.request.Request(url, headers=UA)
-            with urllib.request.urlopen(req, timeout=15) as r:
-                return r.status, json.loads(r.read().decode())
-        except Exception as e:
-            code = getattr(e, "code", "ERR")
-            last = RuntimeError(f"HTTP {code}")
+    for url in urls:
+        for _ in range(2):
+            try:
+                req = urllib.request.Request(url, headers=UA)
+                with urllib.request.urlopen(req, timeout=15) as r:
+                    return r.status, json.loads(r.read().decode()), url
+            except Exception as e:
+                code = getattr(e, "code", "ERR")
+                last = RuntimeError(f"HTTP {code}")
     raise last
 
 
 def _latest(payload):
-    """Newest refRates obs → (date, rate, volume_bn). Volume may be absent."""
-    obs = (payload.get("refRates") or payload.get("rates") or [])[-1]
+    """Newest refRates obs → (date, rate, volume_bn). API returns newest-first."""
+    obs = (payload.get("refRates") or payload.get("rates") or [])[0]
     return obs.get("effectiveDate"), obs.get("percentRate"), obs.get("volumeInBillions")
 
 
@@ -56,8 +63,8 @@ def get_nyfed_rates():
         return d
     try:
         out, codes = {}, []
-        for name, url in ENDPOINTS.items():
-            status, payload = _fetch(url)
+        for name, urls in ENDPOINTS.items():
+            status, payload, used = _fetch(urls)
             codes.append(str(status))
             dt, rate, vol = _latest(payload)
             out[name.lower()] = rate

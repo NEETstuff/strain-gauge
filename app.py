@@ -379,19 +379,23 @@ except Exception as e:
     xrp = {"ok": False, "stale": True, "seq": None,
            "rlusd_note": "RLUSD: not on this server view",
            "note": "feed error · data/cache/xrpl.json"}
-_tag = " · STALE" if cmx.get("stale") else ""
-st.markdown(f"<div style='border:1px solid #333;border-radius:10px;padding:12px'>"
-            f"<b>Gold vault</b>{_tag}<br>{cmx['line']}</div>",
-            unsafe_allow_html=True)
-if xrp.get("ok"):
-    _tag = " · STALE" if xrp.get("stale") else ""
-    _rl = f" · RLUSD issued ${xrp['rlusd'] / 1e9:.2f}B" if xrp.get("rlusd") \
-        else f" · {xrp.get('rlusd_note', 'RLUSD: not on this server view')}"
-    _slab(f"XRPL · res {xrp['reserve_xrp']} · fee {xrp['fee_xrp']}{_rl} · "
-                        f"ledger {xrp['seq']} ({xrp['close_time']}){_tag}")
-    _slab(f"RLUSD ETH contract: {xrp.get('rlusd_eth', 'not mapped')}")
-else:
-    _slab(f"XRPL: {xrp['note']} · {xrp['rlusd_note']}")
+if cmx.get("ok"):
+    _tag = " · STALE" if cmx.get("stale") else ""
+    st.markdown(f"<div style='border:1px solid #333;border-radius:10px;padding:12px'>"
+                f"<b>Gold vault</b>{_tag}<br>{cmx['line']}</div>",
+                unsafe_allow_html=True)
+elif not PUBLIC:
+    _slab("COMEX: not mapped")
+if not PUBLIC:
+    if xrp.get("ok"):
+        _tag = " · STALE" if xrp.get("stale") else ""
+        _rl = f" · RLUSD issued ${xrp['rlusd'] / 1e9:.2f}B" if xrp.get("rlusd") \
+            else f" · {xrp.get('rlusd_note', 'RLUSD: not on this server view')}"
+        _slab(f"XRPL · res {xrp['reserve_xrp']} · fee {xrp['fee_xrp']}{_rl} · "
+                            f"ledger {xrp['seq']} ({xrp['close_time']}){_tag}")
+        _slab(f"RLUSD ETH contract: {xrp.get('rlusd_eth', 'not mapped')}")
+    else:
+        _slab(f"XRPL: {xrp['note']} · {xrp['rlusd_note']}")
 
 with st.expander("Next prints"):
     st.table([{"date": d, "event": e} for d, e in PRINTS])

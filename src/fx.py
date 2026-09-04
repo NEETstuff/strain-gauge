@@ -97,13 +97,25 @@ def get_usdjpy_daily(fred_date=None, fred_val=None):
                 return _record(fred_date, float(fred_val), "FRED DEXJPUS", "FRED fresh")
         except Exception:
             pass
-    # 2-3. Keyless public closes
+    # 2-3. Keyless public closes. Prefer ECB when both prints are ≤2 days old;
+    # otherwise take the newest available. (Wrapper open.er-api.com is fallback.)
+    from datetime import date as _date
+    ty, tm, td = map(int, today.split("-"))
+    _now = _date(ty, tm, td).toordinal()
+    got = []
     for url, parse, name in ((ER_API, _er_api, "open.er-api.com"), (ECB, _ecb, "ECB eurofxref")):
         try:
             status, (dt, val) = _fetch(url, parse)
-            return _record(dt, val, name, f"HTTP {status}")
+            got.append((dt, val, name, status))
         except RuntimeError:
             continue
+    if got:
+        fresh = [(dt, val, name, st) for dt, val, name, st in got
+                 if _now - _date(*map(int, dt.split("-"))).toordinal() <= 2]
+        ecb = [g for g in fresh if g[2] == "ECB eurofxref"]
+        pick = ecb[0] if ecb else max(got, key=lambda g: g[0])
+        dt, val, name, status = pick
+        return _record(dt, val, name, f"HTTP {status}")
     # 4. Fail open on last cached close
     if closes:
         d = {"_day": closes[-1]["date"], "date": closes[-1]["date"], "val": closes[-1]["val"],
