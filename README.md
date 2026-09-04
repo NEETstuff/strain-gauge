@@ -28,5 +28,6 @@ streamlit run app.py
 
 ## Notes
 
+- Vercel hosts the static pointer only. Live board is Streamlit and must run on Streamlit Cloud or Fly with FRED_API_KEY + STRAIN_GAUGE_PUBLIC=1.
 - FIMA repo has no clean daily FRED series; update the manual note from H.4.1 (Thursdays).
 - Data can be late. Thresholds are starting points, not gospel.
