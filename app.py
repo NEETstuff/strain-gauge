@@ -24,7 +24,8 @@ from src.units import fmt_T, fmt_B, fmt_dB, to_T
 st.set_page_config(page_title="Strain Gauge", layout="wide")
 
 st.title("Strain Gauge")
-st.sidebar.markdown("Loading…")
+_loading = st.sidebar.empty()
+_loading.markdown("Loading…")
 
 
 def _load_key():
@@ -94,6 +95,7 @@ else:
     _boom = None
 
 PUBLIC = _is_public()
+_loading.empty()  # data is in — never leave the placeholder painted
 if PUBLIC:
     st.markdown("<style>footer {visibility: hidden;}</style>", unsafe_allow_html=True)
 if _boom and not PUBLIC:
@@ -323,7 +325,8 @@ with s3:
 
 if "fima_state" not in st.session_state:
     st.session_state["fima_state"] = "dormant"
-st.info(f"FIMA: manual — set after H.4.1 Thursday · current: {st.session_state['fima_state']}")
+if not PUBLIC:
+    st.info(f"FIMA: manual — set after H.4.1 Thursday · current: {st.session_state['fima_state']}")
 
 # Thursday ritual (context only — SWPT stays the live swap print, no new gauge).
 _slab("### Thursday ritual")
