@@ -6,6 +6,8 @@ from pathlib import Path
 import streamlit as st
 from src.fetch import fetch_live_or_demo, load_demo
 from src.stablecoins import get_stablecoins
+from src.treasury import get_tga_daily
+from src.nyfed import get_nyfed_rates
 from src.gauges import COPY, WORD, carry_status, dollar_status, liquidity_status, system_line, is_stale
 from src.charts import spark
 from src.units import fmt_T, fmt_B, fmt_dB, to_T
@@ -140,6 +142,48 @@ def _md(datestr):
     except Exception:
         return datestr or "—"
 
+
+# Daily context pipes (fail independently; never feed gauges or thresholds).
+try:
+    tga_d = get_tga_daily()
+except Exception as e:
+    st.error(f"TGA daily failed ({type(e).__name__}): {_scrub(e)}")
+    tga_d = {"ok": False, "stale": True, "date": None, "tga_bn": None,
+             "note": "feed error · data/cache/tga_daily.json"}
+try:
+    nyf = get_nyfed_rates()
+except Exception as e:
+    st.error(f"NY Fed failed ({type(e).__name__}): {_scrub(e)}")
+    nyf = {"ok": False, "stale": True, "date": None, "sofr": None,
+           "note": "feed error · data/cache/nyfed_rates.json"}
+
+if tga_d.get("ok"):
+    _tag = " · STALE" if tga_d["stale"] else ""
+    _w = asof.get("TGA")
+    try:
+        from datetime import date as _date
+        _gap = (_date(*map(int, tga_d["date"].split("-"))) - _date(*map(int, _w.split("-")))).days \
+            if (tga_d.get("date") and _w) else "?"
+        _gap_s = f"{_gap:+d}d vs weekly"
+    except Exception:
+        _gap_s = "gap n/a"
+    st.sidebar.markdown(
+        f"TGA daily · {tga_d['date']} · {fmt_B(tga_d['tga_bn'], 1)}{_tag} (weekly {_w or '—'}, {_gap_s})")
+else:
+    st.sidebar.markdown(f"TGA daily: {tga_d['note']}")
+if nyf.get("ok"):
+    _tag = " · STALE" if nyf["stale"] else ""
+    st.sidebar.markdown(f"NY Fed · {nyf['date']} · SOFR {nyf['sofr']:.2f}%{_tag}")
+else:
+    st.sidebar.markdown(f"NY Fed: {nyf['note']}")
+
+# Dollar card as-of: NY Fed wins only when strictly newer than FRED SOFR.
+_fred_sofr_d = asof.get("SOFR")
+if nyf.get("ok") and nyf.get("date") and _fred_sofr_d and nyf["date"] > _fred_sofr_d:
+    _dol_asof = f"NY Fed {_md(nyf['date'])}"
+else:
+    _dol_asof = f"FRED {_md(_fred_sofr_d)}" if _fred_sofr_d else "date n/a"
+
 ok_statuses = [s for s in (liq_s, dol_s, car_s) if s]
 st.subheader(system_line(ok_statuses) if ok_statuses else "System: data partial — live series missing.")
 st.caption("Plumbing pulse. Not a trade signal.")
@@ -182,6 +226,7 @@ with c2:
     iorb_id = data.get("dollar", {}).get("iorb_id", "IORB")
     card("Dollar Stress", dol_s or "green", line_for("dollar", dol_s, base),
          f"SOFR–{iorb_id} {spread:.0f}bp · Swaps {fmt_B(data.get('dollar', {}).get('swpt'))}"
+         f" · as of {_dol_asof}"
          if not p else "n/a (partial)", p, stale.get("dollar", False))
 with c3:
     p = partial.get("carry", False) or car_s is None
@@ -266,6 +311,17 @@ with st.expander("For operators"):
                       "latest": _jp["vals"][-1] if _jp["ok"] and _jp["vals"] else "missing",
                       "unit": "%", "lag": _jp["lag"],
                       "status": "ok" if _jp["ok"] else "missing"})
+    if tga_d.get("ok"):
+        _rows.append({"series": "TGA daily", "fred_id": "DTS operating_cash_balance",
+                      "last_date": tga_d["date"] or "—", "latest": tga_d["tga_bn"],
+                      "unit": "$B", "lag": "daily (context)",
+                      "status": "STALE" if tga_d["stale"] else "ok"})
+    if nyf.get("ok"):
+        for _k, _unit in (("sofr", "%"), ("effr", "%"), ("obfr", "%")):
+            _rows.append({"series": f"NY Fed {_k.upper()}", "fred_id": "NY Fed markets API",
+                          "last_date": nyf["date"] or "—", "latest": nyf.get(_k),
+                          "unit": _unit, "lag": "daily (context)",
+                          "status": "STALE" if nyf["stale"] else "ok"})
     st.table(_rows)
 
 st.caption("Lorca Labs — sovereign monitor. Data can be late. Thresholds are starting points, not gospel.")
