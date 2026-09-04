@@ -1,7 +1,10 @@
 """Strain Gauge — Lorca Labs local liquidity-plumbing dashboard."""
+import contextlib as _contextlib
 import os
 import re
 from pathlib import Path
+
+_nullcontext = _contextlib.nullcontext
 
 import streamlit as st
 from src.fetch import fetch_live_or_demo, load_demo
@@ -50,8 +53,29 @@ def _load_key():
 
 
 def _scrub(msg):
-    """Strip anything resembling a 32-char hex key. Never display secrets."""
-    return re.sub(r"\b[a-fA-F0-9]{32}\b", "[redacted]", str(msg))
+    """Strip keys and local paths. Never display secrets or lab details."""
+    s = re.sub(r"\b[a-fA-F0-9]{32}\b", "[redacted]", str(msg))
+    s = re.sub(r"/Users/\S+", "[redacted-path]", s)
+    s = re.sub(r"[A-Za-z]:\\[^\s]*", "[redacted-path]", s)
+    return s
+
+
+def _is_public():
+    """Public when forced, on Streamlit sharing, or serving a non-local host."""
+    v = os.getenv("STRAIN_GAUGE_PUBLIC", "").strip().lower()
+    if v in ("1", "true", "yes"):
+        return True
+    if v in ("0", "false", "no"):
+        return False
+    if os.getenv("STREAMLIT_SHARING"):
+        return True
+    try:
+        host = (st.context.headers.get("Host", "") or "").split(":")[0].strip().lower()
+        if host and host not in ("localhost", "127.0.0.1", "::1"):
+            return True
+    except Exception:
+        pass
+    return False
 
 
 try:
@@ -60,37 +84,62 @@ try:
     result = fetch_live_or_demo()
 except Exception as e:  # page must always paint: fall back to demo gauges
     _KEY_LEN = len(os.getenv("FRED_API_KEY", "").strip())
-    st.error(f"Load failed ({type(e).__name__}): {_scrub(e)} — showing demo fixtures.")
+    _boom = f"Load failed ({type(e).__name__}): {_scrub(e)} — showing demo fixtures."
     _d = load_demo()
     result = {"mode": "DEMO", "data": _d, "updated": _d["meta"]["as_of"] + " (demo)",
               "error": f"Load failed ({type(e).__name__}); demo fallback.",
               "series_status": {}, "partial": {}, "checked_at": None, "env": None,
               "probe_status": None}
+else:
+    _boom = None
+
+PUBLIC = _is_public()
+if PUBLIC:
+    st.markdown("<style>footer {visibility: hidden;}</style>", unsafe_allow_html=True)
+if _boom and not PUBLIC:
+    st.error(_boom)
+elif _boom:
+    st.error("Feed delayed.")
 COLOR = {"green": "#22c55e", "yellow": "#eab308", "red": "#ef4444"}
 
 mode, data, updated = result["mode"], result["data"], result["updated"]
 partial = result.get("partial", {})
 badge = "🟢 LIVE" if mode == "LIVE" else "🟡 DEMO"
 
-# Sidebar: one badge only, key_len cannot lie (no key, no abs paths)
+def _err(detail):
+    st.error("Feed delayed." if PUBLIC else detail)
+
+
+def _slab(*a, **kw):
+    if not PUBLIC:
+        st.sidebar.markdown(*a, **kw)
+
+
+def _swarn(*a, **kw):
+    if not PUBLIC:
+        st.sidebar.warning(*a, **kw)
+
+
+# Sidebar: public sees LIVE/DEMO + last update only; lab sees internals.
 st.sidebar.markdown(f"## {badge}")
-st.sidebar.markdown(f"key_len: {_KEY_LEN}")
-if result.get("env"):
-    st.sidebar.markdown(result["env"])
+if not PUBLIC:
+    _slab(f"key_len: {_KEY_LEN}")
+if result.get("env") and not PUBLIC:
+    _slab(result["env"])
 if result.get("checked_at"):
     st.sidebar.markdown(f"Last successful fetch: {result['checked_at']}")
 else:
     st.sidebar.markdown(f"Last update: {updated}")
-if result.get("error"):
-    st.sidebar.warning(result["error"])
+if result.get("error") and not PUBLIC:
+    _swarn(_scrub(result["error"]))
 ss = result.get("series_status", {})
-if ss:
-    st.sidebar.markdown("### Series")
+if ss and not PUBLIC:
+    _slab("### Series")
     for label, r in ss.items():
         mark = "✅" if r["ok"] else "❌"
         date = r["dates"][-1] if r["ok"] and r["dates"] else "—"
         id_note = "" if r["id"] == label else f" ({r['id']})"
-        st.sidebar.markdown(f"{mark} {label}{id_note} · {date} · {r['lag']}")
+        _slab(f"{mark} {label}{id_note} · {date} · {r['lag']}")
 
 # Gauge computation; partial gauges never use demo numbers
 def guarded(which, fn, d):
@@ -145,13 +194,13 @@ def _md(datestr):
 try:
     tga_d = get_tga_daily()
 except Exception as e:
-    st.error(f"TGA daily failed ({type(e).__name__}): {_scrub(e)}")
+    _err(f"TGA daily failed ({type(e).__name__}): {_scrub(e)}")
     tga_d = {"ok": False, "stale": True, "date": None, "tga_bn": None,
              "note": "feed error · data/cache/tga_daily.json"}
 try:
     nyf = get_nyfed_rates()
 except Exception as e:
-    st.error(f"NY Fed failed ({type(e).__name__}): {_scrub(e)}")
+    _err(f"NY Fed failed ({type(e).__name__}): {_scrub(e)}")
     nyf = {"ok": False, "stale": True, "date": None, "sofr": None,
            "note": "feed error · data/cache/nyfed_rates.json"}
 
@@ -165,15 +214,15 @@ if tga_d.get("ok"):
         _gap_s = f"{_gap:+d}d vs weekly"
     except Exception:
         _gap_s = "gap n/a"
-    st.sidebar.markdown(
+    _slab(
         f"TGA daily · {tga_d['date']} · {fmt_B(tga_d['tga_bn'], 1)}{_tag} (weekly {_w or '—'}, {_gap_s})")
 else:
-    st.sidebar.markdown(f"TGA daily: {tga_d['note']}")
+    _slab(f"TGA daily: {tga_d['note']}")
 if nyf.get("ok"):
     _tag = " · STALE" if nyf["stale"] else ""
-    st.sidebar.markdown(f"NY Fed · {nyf['date']} · SOFR {nyf['sofr']:.2f}%{_tag}")
+    _slab(f"NY Fed · {nyf['date']} · SOFR {nyf['sofr']:.2f}%{_tag}")
 else:
-    st.sidebar.markdown(f"NY Fed: {nyf['note']}")
+    _slab(f"NY Fed: {nyf['note']}")
 
 # Dollar card as-of: NY Fed wins only when strictly newer than FRED SOFR.
 _fred_sofr_d = asof.get("SOFR")
@@ -189,7 +238,7 @@ try:
     _fx_fred_v = (_fxx.get("vals") or [None])[-1]
     fx = get_usdjpy_daily(_fx_fred_d, _fx_fred_v)
 except Exception as e:
-    st.error(f"USD/JPY failed ({type(e).__name__}): {_scrub(e)}")
+    _err(f"USD/JPY failed ({type(e).__name__}): {_scrub(e)}")
     fx = {"ok": False, "stale": True, "date": None, "val": None, "val_3d_ago": None,
           "source": "none", "note": "feed error · data/cache/usdjpy_daily.json"}
 if fx.get("ok"):
@@ -202,8 +251,8 @@ if fx.get("ok"):
     stale["carry"] = bool(fx["stale"] or is_stale(fx["date"], "daily", today))
     if stale["carry"] and car_s == "red":
         car_s, _capped_car = "yellow", True
-st.sidebar.markdown(f"USD/JPY · {fx.get('date') or '—'} · {fx.get('source', 'none')}")
-st.sidebar.markdown("JGB10y · n/a · no live FRED series")
+_slab(f"USD/JPY · {fx.get('date') or '—'} · {fx.get('source', 'none')}")
+_slab("JGB10y · n/a · no live FRED series")
 
 ok_statuses = [s for s in (liq_s, dol_s, car_s) if s]
 st.subheader(system_line(ok_statuses) if ok_statuses else "System: data partial — live series missing.")
@@ -277,33 +326,34 @@ if "fima_state" not in st.session_state:
 st.info(f"FIMA: manual — set after H.4.1 Thursday · current: {st.session_state['fima_state']}")
 
 # Thursday ritual (context only — SWPT stays the live swap print, no new gauge).
-st.sidebar.markdown("### Thursday ritual")
+_slab("### Thursday ritual")
 _sw, _sw_d = data.get("dollar", {}).get("swpt"), asof.get("SWPT")
-st.sidebar.markdown(f"Swaps (SWPT) · {_sw_d or '—'} · {fmt_B(_sw) if _sw is not None else 'n/a'}")
-fima = st.sidebar.selectbox("FIMA", ["dormant", "elevated", "drawing"], key="fima_state")
+_slab(f"Swaps (SWPT) · {_sw_d or '—'} · {fmt_B(_sw) if _sw is not None else 'n/a'}")
+fima = st.session_state["fima_state"] if PUBLIC else st.sidebar.selectbox(
+    "FIMA", ["dormant", "elevated", "drawing"], key="fima_state")
 _h41 = result.get("h41_date")
 _H41_URL = "https://www.federalreserve.gov/releases/h41/current/default.htm"
 if _h41:
-    st.sidebar.markdown(f"H.4.1 · {_h41} · [open the release]({_H41_URL})")
+    _slab(f"H.4.1 · {_h41} · [open the release]({_H41_URL})")
 else:
-    st.sidebar.markdown(f"H.4.1 · open the release · [link]({_H41_URL})")
+    _slab(f"H.4.1 · open the release · [link]({_H41_URL})")
 _rsv = ss.get("WRESBAL", {})
 _rsv_bn = (_rsv.get("vals") or [None])[-1]
 _rsv_bn = _rsv_bn / 1000.0 if _rsv_bn is not None else None  # FRED $M → $B
-st.sidebar.markdown(f"Reserves · {asof.get('WRESBAL') or '—'} · {fmt_T(_rsv_bn)}")
+_slab(f"Reserves · {asof.get('WRESBAL') or '—'} · {fmt_T(_rsv_bn)}")
 
 # Auction + dealer context (fail independently; never feed gauges).
 try:
     auc = get_auctions()
 except Exception as e:
-    st.error(f"Auctions failed ({type(e).__name__}): {_scrub(e)}")
+    _err(f"Auctions failed ({type(e).__name__}): {_scrub(e)}")
     auc = {"ok": False, "stale": True,
            "line": "Auctions: no parseable feed — check TreasuryDirect.",
            "note": "feed error · data/cache/auctions.json"}
 try:
     dlr = get_dealers()
 except Exception as e:
-    st.error(f"Dealers failed ({type(e).__name__}): {_scrub(e)}")
+    _err(f"Dealers failed ({type(e).__name__}): {_scrub(e)}")
     dlr = {"ok": False, "mapped": False, "note": "feed error · data/cache/dealers.json"}
 _tag = " · STALE" if auc.get("stale") else ""
 st.markdown(f"<div style='border:1px solid #333;border-radius:10px;padding:12px'>"
@@ -311,21 +361,21 @@ st.markdown(f"<div style='border:1px solid #333;border-radius:10px;padding:12px'
             unsafe_allow_html=True)
 if dlr.get("ok") and dlr.get("mapped"):
     _tag = " · STALE" if dlr.get("stale") else ""
-    st.sidebar.markdown(f"Dealers · {dlr.get('asof', '—')}{_tag} · {dlr['note']}")
+    _slab(f"Dealers · {dlr.get('asof', '—')}{_tag} · {dlr['note']}")
 else:
-    st.sidebar.markdown("Dealers: feed not mapped")
+    _slab("Dealers: feed not mapped")
 
 # COMEX + XRPL context (fail independently; never feed gauges).
 try:
     cmx = get_comex_gold()
 except Exception as e:
-    st.error(f"COMEX failed ({type(e).__name__}): {_scrub(e)}")
+    _err(f"COMEX failed ({type(e).__name__}): {_scrub(e)}")
     cmx = {"ok": False, "mapped": False, "line": "COMEX: feed not mapped",
            "note": "feed error · data/cache/comex_gold.json"}
 try:
     xrp = get_xrpl()
 except Exception as e:
-    st.error(f"XRPL failed ({type(e).__name__}): {_scrub(e)}")
+    _err(f"XRPL failed ({type(e).__name__}): {_scrub(e)}")
     xrp = {"ok": False, "stale": True, "seq": None,
            "rlusd_note": "RLUSD: not on this server view",
            "note": "feed error · data/cache/xrpl.json"}
@@ -337,11 +387,11 @@ if xrp.get("ok"):
     _tag = " · STALE" if xrp.get("stale") else ""
     _rl = f" · RLUSD issued ${xrp['rlusd'] / 1e9:.2f}B" if xrp.get("rlusd") \
         else f" · {xrp.get('rlusd_note', 'RLUSD: not on this server view')}"
-    st.sidebar.markdown(f"XRPL · res {xrp['reserve_xrp']} · fee {xrp['fee_xrp']}{_rl} · "
+    _slab(f"XRPL · res {xrp['reserve_xrp']} · fee {xrp['fee_xrp']}{_rl} · "
                         f"ledger {xrp['seq']} ({xrp['close_time']}){_tag}")
-    st.sidebar.markdown(f"RLUSD ETH contract: {xrp.get('rlusd_eth', 'not mapped')}")
+    _slab(f"RLUSD ETH contract: {xrp.get('rlusd_eth', 'not mapped')}")
 else:
-    st.sidebar.markdown(f"XRPL: {xrp['note']} · {xrp['rlusd_note']}")
+    _slab(f"XRPL: {xrp['note']} · {xrp['rlusd_note']}")
 
 with st.expander("Next prints"):
     st.table([{"date": d, "event": e} for d, e in PRINTS])
@@ -350,10 +400,10 @@ with st.expander("Next prints"):
 try:
     sc = get_stablecoins()
 except Exception as e:
-    st.error(f"Stablecoins failed ({type(e).__name__}): {_scrub(e)}")
+    _err(f"Stablecoins failed ({type(e).__name__}): {_scrub(e)}")
     sc = {"ok": False, "stale": True, "note": "feed error · data/cache/stablecoins_latest.json"}
 _sc_note = sc["note"].replace(str(Path(__file__).resolve().parent) + "/", "")
-st.sidebar.markdown(f"Stablecoins: {_sc_note}")
+_slab(f"Stablecoins: {_sc_note}")
 if sc.get("ok"):
     tag = " · STALE" if sc["stale"] else ""
     chg = f"{sc['chg7']:+.1f}% 7d" if sc["chg7"] is not None else "7d n/a"
@@ -376,7 +426,7 @@ else:
                 "<b>On-chain dollars</b> · STALE<br>Stablecoin feed unavailable.</div>",
                 unsafe_allow_html=True)
 
-with st.expander("For operators"):
+with st.expander("For operators") if not PUBLIC else _nullcontext():
     _units = {"WALCL": "$B", "TGA": "$B", "ON RRP": "$B", "SOFR": "%", "EFFR": "%",
               "IORB": "%", "USD/JPY": "level", "US 2y": "%", "US 10y": "%",
               "SWPT": "$B", "OBFRVOL": "$B", "WRESBAL": "$B"}
@@ -427,7 +477,8 @@ with st.expander("For operators"):
                       "last_date": xrp.get("close_time") or "—", "latest": xrp["seq"],
                       "unit": "ledger", "lag": "realtime (context)",
                       "status": "STALE" if xrp["stale"] else "ok"})
-    st.table(_rows)
+    if not PUBLIC:
+        st.table(_rows)
 
 st.caption("Lorca Labs — sovereign monitor. Data can be late. Thresholds are starting points, not gospel.")
 st.caption("This product uses the FRED® API but is not endorsed or certified by the Federal Reserve Bank of St. Louis.")

@@ -13,6 +13,12 @@ streamlit run app.py
 2. `export FRED_API_KEY=your_key_here` (or copy `.env.example` to `.env`).
 3. Restart the app. Badge flips from DEMO to LIVE. Without a key the app runs on `data/demo.json` fixtures, clearly labeled DEMO.
 
+## Hosting (public mode)
+
+- The FRED key goes in the host's secret store as `FRED_API_KEY`, never in git. One operator key on the server is OK; the key is never shipped to browsers.
+- FRED terms: respect rate limits; the app caches FRED-adjacent pipes Chicago-day and budgets ~20s for the live fetch.
+- `STRAIN_GAUGE_PUBLIC=1` forces public UI (also auto when `STREAMLIT_SHARING` is set or the host isn't localhost): title, system line, gauges, sparklines, context cards, and attribution only — no key_len, env paths, operators table, FRED IDs, FIMA select, or ritual internals. Errors show "Feed delayed." only.
+
 ## Thresholds (v1, edit in `src/gauges.py` THRESHOLDS)
 
 - Dollar Stress: SOFR–IORB < 5bp and SWPT < $1B → CALM; 5–15bp or $1–10B → TIGHTENING; > 15bp or > $10B → STRAIN. No other rule touches this card.
